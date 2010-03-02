@@ -20,7 +20,7 @@ class PochoTheRobot
 
     @logger.level = ENV['DEBUG'] ? Logger::DEBUG : Logger::INFO
     jid = options[:user]
-    @ns = jid.split('@').last # Namespace
+    @name, @ns = jid.split('@') # Namespace
     @ds = DataStore.new @ns
 
     logger.info "[Pocho] Connecting #{jid}"
@@ -35,8 +35,8 @@ class PochoTheRobot
       Thread.new do
         muc = Jabber::MUC::SimpleMUCClient.new(@pocho.client)
         muc.on_message do |time,user,msg|
-          m = parse_and_store(user, msg, Time.now) unless time # Avoid msg history
-          notify(muc, user) if m && @notify_with
+          m = parse_and_store(user, msg, Time.now, muc) unless time # Avoid msg history
+          notify(muc, user) if m == :tag && @notify_with
         end
         muc.join("#{room}/Pocho The Robot")
       end
@@ -59,12 +59,15 @@ class PochoTheRobot
   end
 
   # Parse the message looking for #hashtags, if there's any, it'll be stored.
-  def parse_and_store user, msg, time
+  def parse_and_store user, msg, time, muc
     logger.debug "[Pocho] Processing: #{user.inspect} - #{msg.inspect}"
-
     msg = msg.strip
-    tags = msg.scan(/ #[\w-]+/).map(&:strip)
-    if tags.any?
+
+    if msg =~ /#{@name}: (.*)/
+      commands = $1.split
+      obey(muc, commands)
+      return :command
+    elsif user != 'Pocho The Robot' && tags = msg.scan(/ #[\w-]+/).map(&:strip)
       tuple = Marshal.dump([user, msg, time])
       tags.each do |tag|
         @ds.store_message_by_tag tuple, tag
@@ -72,14 +75,27 @@ class PochoTheRobot
       end
       @ds.store_message_by_date tuple, time
       @ds.store_message_by_user tuple, user
-      return true
+      return :tag
     else
-      return false
+      return nil
     end
 
     rescue Exception => e
       logger.error "[Pocho] Exception: #{e.message} | Processing: #{msg.inspect}"
       logger.error e.backtrace
+  end
+
+  def obey(muc, commands)
+    case commands.first
+    when "list"
+      muc.say("Current tags: " + @ds.find_all_tags.join(" "))
+    when "show"
+      if commands.last != "show"
+        @ds.find_messages_by_tag(commands.last).each_with_index do |(user, message, date), i|
+          muc.say("#{i}. #{message} -- by #{user} at #{date.strftime('%d.%m.%Y %H:%M')}")
+        end
+      end
+    end
   end
 
   # Logger sugar.
